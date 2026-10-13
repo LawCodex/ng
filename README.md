@@ -69,7 +69,9 @@ Notes on the sources:
   and are not available from the sources used.
 * No consolidation: Acts are as enacted; amendments are separate files.
 * State laws, subsidiary legislation (regulations, orders) and Presidential executive orders are not included.
-* Documents that could not be downloaded or were empty are listed by the fetch script (`MISSING/BAD`, `EMPTY`).
+* The National Assembly's PDF of the Trade Union (Amendment) Act 2005 (document 5808) is corrupt (no extractable
+  text) and is missing; duplicate uploads (e.g. Investments and Securities Act 2007) are kept once.
+* 65 files were produced by OCR; 5 entries are Bill texts (`type: bill`).
 
 ## Copyright
 
