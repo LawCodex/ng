@@ -129,19 +129,20 @@ def _page_columns(path, i, w, h):
     # words spanning the middle are allowed only in full-width headings
     if cross > 0.04 * len(words) or left < 0.2 * len(words) or right < 0.2 * len(words):
         return None
-    # find the top-most y below which the page is in two columns: header lines (crossing words) above it
-    ys = sorted(float(b) for a, b, c, d in words if float(a) < mid - 2 and float(c) > mid + 2)
-    top = 0
-    out = []
-    if ys:
-        top = max(ys) + 1 if max(ys) < h * 0.35 else 0
-        if top:
-            out.append(subprocess.run(["pdftotext", "-r", "72", "-f", str(i), "-l", str(i), "-x", "0", "-y", "0",
-                                       "-W", str(int(w) + 1), "-H", str(int(top)), path, "-"], capture_output=True).stdout.decode("utf-8", "replace"))
-    for x0 in (0, int(mid)):
-        out.append(subprocess.run(["pdftotext", "-r", "72", "-f", str(i), "-l", str(i), "-x", str(x0), "-y", str(int(top)),
-                                   "-W", str(int(mid) + 1), "-H", str(int(h) + 1 - int(top)), path, "-"],
-                                  capture_output=True).stdout.decode("utf-8", "replace"))
+    # full-width header/footer bands: words crossing the middle near the top/bottom of the page
+    crossing = [(float(b), float(d)) for a, b, c, d in words if float(a) < mid - 2 and float(c) > mid + 2]
+    head = [d for b, d in crossing if b < h * 0.25]
+    foot = [b for b, d in crossing if b > h * 0.8]
+    top = int(max(head)) + 2 if head else 0
+    bottom = int(min(foot)) - 1 if foot else int(h) + 1
+
+    def region(x0, y0, ww, hh):
+        if hh <= 0:
+            return ""
+        return subprocess.run(["pdftotext", "-r", "72", "-f", str(i), "-l", str(i), "-x", str(int(x0)), "-y", str(int(y0)),
+                               "-W", str(int(ww)), "-H", str(int(hh)), path, "-"], capture_output=True).stdout.decode("utf-8", "replace")
+    out = [region(0, 0, w + 1, top), region(0, top, mid + 1, bottom - top), region(mid, top, mid + 1, bottom - top),
+           region(0, bottom, w + 1, h + 1 - bottom)]
     return "\n".join(x.replace("\f", "") for x in out)
 
 
@@ -322,6 +323,8 @@ def structure(lines, lang="en"):
     """Turn cleaned lines into markdown body lines."""
     levels = FR_LEVELS if lang == "fr" else EN_LEVELS
     secset = _sec_runs(lines) if lang == "en" else set()
+    if sum(1 for x in lines if re.match(r"^(Article|Section)\s+\d+[A-Z]?\s*[—–]\s*\S", x)) >= 5:
+        secset = set()  # "Section 12—Title." style (Ghana revised editions): numbered lists are tables of contents
     # which division kinds are used
     used = []
     for x in lines:
@@ -389,6 +392,13 @@ def structure(lines, lang="en"):
                     para.append(rest)
                 i += 1
                 continue
+        elif re.match(r"^(Article|Section|Regulation|Rule|Paragraph)\s+(\d+[A-Z]?)\s*[—–]\s*(.{2,200})$", x):
+            flush()
+            m = re.match(r"^(Article|Section|Regulation|Rule|Paragraph)\s+(\d+[A-Z]?)\s*[—–]\s*(.{2,200})$", x)
+            out.append("#" * art_level + " %s %s — %s" % (m.group(1), m.group(2), m.group(3).rstrip(".")))
+            out.append("")
+            i += 1
+            continue
         elif i in secset:
             flush()
             m = EN_SEC.match(x)
