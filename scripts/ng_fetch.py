@@ -94,6 +94,8 @@ def main():
             typ = "constitutional_amendment"
         else:
             typ = "bill" if re.search(r"\bBILL\b", title) and not re.search(r"\bACT\b(?!\s*\(AMENDMENT\) BILL)", title.replace("ACT (AMENDMENT) BILL", "")) else "act"
+            if pdf.endswith(".bin"):
+                typ = "bill"  # Word documents published by NASS are bill drafts, not assented Acts
             rel = "acts/%s/%s.md" % (year, T.slug(title))
         key = rel
         if key in seen:
@@ -113,7 +115,7 @@ def main():
             "retrieved": RETRIEVED,
             "note": ("Text as published by the National Assembly (as enacted, not consolidated)" +
                      ("; text obtained by OCR of a scanned PDF" if ocr else "") +
-                     ("; listed by NASS under Acts & Publications but titled as a Bill" if typ == "bill" else "")),
+                     ("; listed by NASS under Acts & Publications but the document is a Bill text" if typ == "bill" else "")),
         }
         if typ == "constitution":
             meta["status"] = "in_force"

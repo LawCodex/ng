@@ -12,6 +12,12 @@ Federal legislation of the Federal Republic of Nigeria, in **English**, from off
 Retrieved 2026-10-13.
 
 <!-- COUNTS -->
+| Directory | Files |
+|---|---|
+| `acts/` | 161 |
+| `constitution/` | 1 |
+| `constitution/alterations/` | 2 |
+| **Total** | **164** |
 <!-- /COUNTS -->
 
 ## Structure

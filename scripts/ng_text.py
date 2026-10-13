@@ -83,7 +83,7 @@ def _ocr_page(path, i, lang, tmpdir):
     td = os.environ.get("LC_TESSDATA")
     if td:
         env["TESSDATA_PREFIX"] = td
-    r = subprocess.run(["tesseract", png, "-", "-l", lang, "--psm", "6"], capture_output=True, env=env)
+    r = subprocess.run(["tesseract", png, "-", "-l", lang, "--psm", os.environ.get("LC_PSM", "6")], capture_output=True, env=env)
     os.remove(png)
     return r.stdout.decode("utf-8", "replace")
 
@@ -100,7 +100,73 @@ def text_quality(t):
 
 
 def pdf_text(path, lang="eng", tmpdir=None, min_chars=200, ocr=True, min_quality=0.7):
-    """Return (list_of_page_texts, used_ocr)."""
+    """Return (list_of_page_texts, used_ocr). Cached next to the PDF (<pdf>.text.json)."""
+    import json
+    cache = path + ".text.json"
+    if os.path.exists(cache) and os.path.getmtime(cache) >= os.path.getmtime(path):
+        try:
+            pages, used = json.load(open(cache))
+            return pages, used
+        except ValueError:
+            pass
+    pages, used = _pdf_text(path, lang, tmpdir, min_chars, ocr, min_quality)
+    with open(cache, "w") as f:
+        json.dump([pages, used], f)
+    return pages, used
+
+
+def _page_columns(path, i, w, h):
+    """If page i is laid out in two columns (almost no word crosses the vertical middle),
+    return the text of the left then the right column; else None."""
+    r = subprocess.run(["pdftotext", "-bbox", "-f", str(i), "-l", str(i), path, "-"], capture_output=True)
+    words = re.findall(rb'<word xMin="([\d.]+)" yMin="([\d.]+)" xMax="([\d.]+)" yMax="([\d.]+)"', r.stdout)
+    if len(words) < 80:
+        return None
+    mid = w / 2.0
+    cross = sum(1 for a, b, c, d in words if float(a) < mid - 2 and float(c) > mid + 2)
+    left = sum(1 for a, b, c, d in words if float(c) <= mid + 2)
+    right = sum(1 for a, b, c, d in words if float(a) >= mid - 2)
+    # words spanning the middle are allowed only in full-width headings
+    if cross > 0.04 * len(words) or left < 0.2 * len(words) or right < 0.2 * len(words):
+        return None
+    # find the top-most y below which the page is in two columns: header lines (crossing words) above it
+    ys = sorted(float(b) for a, b, c, d in words if float(a) < mid - 2 and float(c) > mid + 2)
+    top = 0
+    out = []
+    if ys:
+        top = max(ys) + 1 if max(ys) < h * 0.35 else 0
+        if top:
+            out.append(subprocess.run(["pdftotext", "-r", "72", "-f", str(i), "-l", str(i), "-x", "0", "-y", "0",
+                                       "-W", str(int(w) + 1), "-H", str(int(top)), path, "-"], capture_output=True).stdout.decode("utf-8", "replace"))
+    for x0 in (0, int(mid)):
+        out.append(subprocess.run(["pdftotext", "-r", "72", "-f", str(i), "-l", str(i), "-x", str(x0), "-y", str(int(top)),
+                                   "-W", str(int(mid) + 1), "-H", str(int(h) + 1 - int(top)), path, "-"],
+                                  capture_output=True).stdout.decode("utf-8", "replace"))
+    return "\n".join(x.replace("\f", "") for x in out)
+
+
+def pdf_text_columns(path, lang="fra", tmpdir=None, **kw):
+    """Like pdf_text, but splits two-column pages (Journal officiel layout) into columns."""
+    import json
+    cache = path + ".cols.json"
+    if os.path.exists(cache) and os.path.getmtime(cache) >= os.path.getmtime(path):
+        try:
+            return tuple(json.load(open(cache)))
+        except ValueError:
+            pass
+    pages, used = pdf_text(path, lang, tmpdir, **kw)
+    if not used:
+        r = subprocess.run(["pdfinfo", path], capture_output=True).stdout.decode("latin-1")
+        m = re.search(r"Page size:\s+([\d.]+) x ([\d.]+)", r)
+        if m:
+            w, h = float(m.group(1)), float(m.group(2))
+            pages = [(_page_columns(path, i + 1, w, h) or p) for i, p in enumerate(pages)]
+    with open(cache, "w") as f:
+        json.dump([pages, used], f)
+    return pages, used
+
+
+def _pdf_text(path, lang, tmpdir, min_chars, ocr, min_quality):
     r = subprocess.run(["pdftotext", "-enc", "UTF-8", path, "-"], capture_output=True)
     pages = r.stdout.decode("utf-8", "replace").split("\f")
     if pages and not pages[-1].strip():
@@ -197,9 +263,14 @@ def _title_after(lines, j):
 
 
 def _div(line, levels):
+    fl = re.I if levels is FR_LEVELS else 0
     for name, pat in levels:
-        if re.match(r"^(" + pat + r")\s*[-–—:.]?\s*(.*)$", line):
-            m = re.match(r"^(" + pat + r")\s*[-–—:.]?\s*(.*)$", line)
+        m = re.match(r"^(" + pat + r")\s*[-–—:.]?\s*(.*)$", line, fl)
+        if m:
+            if fl and not line[:1].isupper():
+                return None
+            if fl and len(line) > 120:
+                return None
             rest = m.groups()[-1].strip()
             # a heading line is short; avoid cross references ("Part II of this Act shall")
             if len(line) > 160:
@@ -266,6 +337,8 @@ def structure(lines, lang="en"):
     def flush():
         if para:
             txt = " ".join(para)
+            txt = re.sub(r"^([#>+*-](?=\s|#)|#)", lambda m: "\\" + m.group(0), txt)
+            txt = re.sub(r"^(\d+)\.(\s)", r"\1\\.\2", txt)
             txt = re.sub(r"(\w)- (\w)", lambda m: m.group(1) + m.group(2) if m.group(2).islower() else m.group(0), txt)
             out.append(txt)
             out.append("")
@@ -301,8 +374,11 @@ def structure(lines, lang="en"):
             i += 1
             continue
         if lang == "fr":
+            x = re.sub(r"^[|:;.,'‘’_\-–—=•°\s]{1,6}(?=(ARTICLE|Article|ART|Art)\b)", "", x)
             m = FR_ART.match(x)
-            if m and (x[:3] in ("ART", "Art")):
+            if m and (x[:3] in ("ART", "Art")) and not re.match(
+                    r"^(de la loi|de l[’']ordonnance|de l[’']acte|du d[ée]cret|de la pr[ée]sente|de la Constitution|des lois|du code|du présent|alinéa|,|et \d|à \d)",
+                    (m.group(m.lastindex) or "").strip(), re.I):
                 flush()
                 lab = m.group(2)
                 rest = m.group(m.lastindex).strip() if m.lastindex else ""
